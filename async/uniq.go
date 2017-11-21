@@ -121,21 +121,26 @@ func (c *UniQueue) Check(s string) bool {
 // Insert attempts to push another string to the channel. checks for existence, chan and cache sizes
 // before writing to the internal inflight channel.
 func (c *UniQueue) Insert(s string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	// ok with race conditions here
 	if c.closed == 1 {
 		return UNIQUEUE_CLOSED
 	}
 
-	// ok with race conditions here
 	_, ok := c.dedup[s]
 	if ok {
 		return cache.ALREADY_EXISTS
 	}
 
-	// ok with race conditions here
 	if c.records == c.maxdedup {
 		return cache.CACHEFULL
+	}
+
+	// not ok with race conditions here
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// check again inside the lock.
+	if c.closed == 1 {
+		return UNIQUEUE_CLOSED
 	}
 
 	if atomic.LoadInt32(&c.inflight) == int32(c.maxinflight) {
