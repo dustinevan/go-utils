@@ -25,7 +25,5 @@ func TestSemaphore(t *testing.T) {
 
 	canc()
 	assert.Error(t, s1.Acquire(), "parent context cancel failed to close semaphore")
-	assert.NotPanics(t, func() { s1.Close() }, "semaphore close panicked")
-
 	//s2 := NewSemaphore(2, context.Background())
 }

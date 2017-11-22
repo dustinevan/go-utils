@@ -13,17 +13,16 @@ type Semaphore struct {
 }
 
 func NewSemaphore(max int, parentCtx context.Context) *Semaphore {
-	ctx, canc := context.WithCancel(parentCtx)
 
 	s := &Semaphore{
 		buf:    make(chan struct{}, max),
-		ctx:    ctx,
-		cancel: canc,
+		ctx:    parentCtx,
 	}
 
 	go func() {
-		<-ctx.Done()
+		<-s.ctx.Done()
 		close(s.buf)
+		drainStruct(s.buf)
 	}()
 
 	return s
@@ -42,9 +41,4 @@ func (s *Semaphore) Acquire() error {
 
 func (s *Semaphore) Release() {
 	<-s.buf
-}
-
-func (s *Semaphore) Close() {
-	s.cancel()
-	drainStruct(s.buf)
 }
