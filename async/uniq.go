@@ -11,7 +11,7 @@ import (
 	"github.com/mediaFORGE/supplyqc/infra/cache"
 )
 
-var CHANFULL = errors.New("the channel is full, nothing can be inserted until consumers catch up")
+var QFULL = errors.New("the channel is full, nothing can be inserted until consumers catch up")
 var UNIQUEUE_CLOSED = errors.New("this uniqueue is closed")
 
 type UniQueue struct {
@@ -144,7 +144,7 @@ func (c *UniQueue) Insert(s string) error {
 	}
 
 	if atomic.LoadInt32(&c.inflight) == int32(c.maxinflight) {
-		return CHANFULL
+		return QFULL
 	}
 
 	c.dedup[s] = time.Now().Add(c.deduptime).Unix()

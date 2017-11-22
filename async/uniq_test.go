@@ -63,7 +63,7 @@ func TestUniQueue_Insert(t *testing.T) {
 	if err == nil {
 		assert.Fail(t,"inflight failed")
 	} else {
-		assert.Equal(t, CHANFULL, err, "inflight failed to return CHANFULL on insert")
+		assert.Equal(t, QFULL, err, "inflight failed to return CHANFULL on insert")
 	}
 	assert.Equal(t, 11, ch2.records, "record count incorrect")
 	assert.Equal(t, int32(3), ch2.inflight, "inflight count incorrect")
@@ -72,7 +72,7 @@ func TestUniQueue_Insert(t *testing.T) {
 	// let the dedup cache clean out
 	// unix time so 1 second is the lowest precision
 	time.Sleep(time.Second * 2)
-	assert.Equal(t, CHANFULL, ch2.Insert("a"), "dedup failed")
+	assert.Equal(t, QFULL, ch2.Insert("a"), "dedup failed")
 	assert.Equal(t, 0, ch2.records, "record count incorrect")
 
 	c := ch2.GetChan()
