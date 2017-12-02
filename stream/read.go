@@ -8,16 +8,16 @@ import (
 	"github.com/dustinevan/protobuf/records"
 )
 
-type ReaderOption func(stream *ReadStream) *ReadStream
+type ReaderOption func(stream *Read) *Read
 
 func ChunkSize(n int) ReaderOption {
-	return func(stream *ReadStream) *ReadStream {
+	return func(stream *Read) *Read {
 		stream.chunksize = n
 		return stream
 	}
 }
 
-type ReadStream struct {
+type Read struct {
 	r records.Reader
 
 	ctx  context.Context
@@ -28,8 +28,8 @@ type ReadStream struct {
 
 }
 
-func NewReadStream(r records.Reader, ctx context.Context, canc context.CancelFunc, opts ...ReaderOption) *ReadStream {
-	return &ReadStream{
+func NewRead(r records.Reader, ctx context.Context, canc context.CancelFunc, opts ...ReaderOption) *Read {
+	return &Read{
 		r: r,
 
 		ctx:  ctx,
@@ -39,13 +39,13 @@ func NewReadStream(r records.Reader, ctx context.Context, canc context.CancelFun
 	}
 }
 
-func (s *ReadStream) Start() {
+func (s *Read) Start() {
 	go func() {
 		s.read()
 	}()
 }
 
-func (s *ReadStream) read() {
+func (s *Read) read() {
 	defer close(s.outgoing)
 	for {
 		select {
@@ -74,11 +74,11 @@ func (s *ReadStream) read() {
 
 // Called by consumers. The works as a demux or fanout if called multiple times. If a copy to
 // each consumer is needed, that must be done externally
-func (s *ReadStream) GetStream() <-chan [][]byte {
+func (s *Read) GetStream() <-chan [][]byte {
 	return s.outgoing
 }
 
 // for the future
-//func (w *ReadStream) Monitor() <-chan monitor.Message {
+//func (w *Read) Monitor() <-chan monitor.Message {
 //
 //}

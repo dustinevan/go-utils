@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 )
 
-type StreamWriter struct {
+type Write struct {
 	w io.Writer
 
 	ctx  context.Context
@@ -26,8 +26,8 @@ type StreamWriter struct {
 	completed chan struct{}
 }
 
-func NewStreamWriter(w io.Writer, wg *sync.WaitGroup, ctx context.Context, can context.CancelFunc) *StreamWriter {
-	s := &StreamWriter{
+func NewWrite(w io.Writer, wg *sync.WaitGroup, ctx context.Context, can context.CancelFunc) *Write {
+	s := &Write{
 		w: w,
 
 		ctx:      ctx,
@@ -47,7 +47,7 @@ func NewStreamWriter(w io.Writer, wg *sync.WaitGroup, ctx context.Context, can c
 }
 
 // SetStream works as a Mux into the incoming channel.
-func (s *StreamWriter) SetStream(ch <-chan [][]byte) {
+func (s *Write) SetStream(ch <-chan [][]byte) {
 	s.mu.Lock()
 	s.mu.Unlock()
 	// write data from ch to incoming
@@ -62,7 +62,7 @@ func (s *StreamWriter) SetStream(ch <-chan [][]byte) {
 	s.waitAndClose()
 }
 
-func (s *StreamWriter) waitAndClose() {
+func (s *Write) waitAndClose() {
 	// if the goroutine already exists, return
 	if atomic.LoadInt32(&s.isWaiting) > 0 {
 		return
@@ -76,7 +76,7 @@ func (s *StreamWriter) waitAndClose() {
 	}()
 }
 
-func (s *StreamWriter) write() {
+func (s *Write) write() {
 	defer s.parentwg.Done()
 	for chunk := range s.incoming {
 		select {

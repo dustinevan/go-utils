@@ -9,10 +9,10 @@ import (
 
 type ConvertFn func(b []byte) ([]byte, error)
 
-type ConvertOption func(c *Converter) *Converter
+type ConvertOption func(c *Convert) *Convert
 
 func CancelOnConvertErr() ConvertOption {
-	return func(c *Converter) *Converter {
+	return func(c *Convert) *Convert {
 		c.handler = func(err error, rec []byte) {
 			log.Printf("converter: encountered error: %s on record: %s, canceling stream.", err, string(rec))
 			c.canc()
@@ -21,7 +21,7 @@ func CancelOnConvertErr() ConvertOption {
 	}
 }
 
-type Converter struct {
+type Convert struct {
 	convertfn ConvertFn
 
 	ctx  context.Context
@@ -40,8 +40,8 @@ type Converter struct {
 	handler func(err error, rec []byte)
 }
 
-func NewConverter(convertfn ConvertFn, ctx context.Context, can context.CancelFunc, opts ...ConvertOption) *Converter {
-	c := &Converter{
+func NewConvert(convertfn ConvertFn, ctx context.Context, can context.CancelFunc, opts ...ConvertOption) *Convert {
+	c := &Convert{
 		convertfn: convertfn,
 
 		ctx:  ctx,
@@ -62,7 +62,7 @@ func NewConverter(convertfn ConvertFn, ctx context.Context, can context.CancelFu
 }
 
 // SetStream works as a Mux into the incoming channel.
-func (c *Converter) SetStream(ch <-chan [][]byte) {
+func (c *Convert) SetStream(ch <-chan [][]byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	// write data from ch to incoming
@@ -77,7 +77,7 @@ func (c *Converter) SetStream(ch <-chan [][]byte) {
 	c.waitAndClose()
 }
 
-func (c *Converter) waitAndClose() {
+func (c *Convert) waitAndClose() {
 	// if the goroutine already exists, return
 	if atomic.LoadInt32(&c.isWaiting) > 0 {
 		return
@@ -93,11 +93,11 @@ func (c *Converter) waitAndClose() {
 
 // Called by consumers. The works as a demux or fanout if called multiple times. If a copy to
 // each consumer is needed, that must be done externally
-func (c *Converter) GetStream() <-chan [][]byte {
+func (c *Convert) GetStream() <-chan [][]byte {
 	return c.outgoing
 }
 
-func (c *Converter) convert() {
+func (c *Convert) convert() {
 	defer close(c.outgoing)
 	for chunk := range c.incoming {
 		select {
