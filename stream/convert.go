@@ -31,7 +31,7 @@ type Convert struct {
 	monitor *Monitor
 }
 
-func NewConvert(fn ConvertFn, in <-chan [][]byte, opts ...ConvertOption) *Convert {
+func NewConvert(fn ConvertFn, in <-chan [][]byte, opts ...ConvertOption) (*Convert, *Monitor) {
 	ctx, canc := context.WithCancel(context.Background())
 
 	c := &Convert{
@@ -54,13 +54,7 @@ func NewConvert(fn ConvertFn, in <-chan [][]byte, opts ...ConvertOption) *Conver
 		defer c.donewg.Done()
 		c.convert(in)
 	}()
-	return c
-}
-
-// Called by consumers. The works as a demux or fanout if called multiple times. If a copy to
-// each consumer is needed, that must be done externally
-func (c *Convert) GetStream() <-chan [][]byte {
-	return c.outgoing
+	return c, monitor
 }
 
 func (c *Convert) convert(in <-chan [][]byte) {
@@ -95,4 +89,10 @@ func (c *Convert) convert(in <-chan [][]byte) {
 	if failed == 0 {
 		c.monitor.SetSuccess(true)
 	}
+}
+
+// Called by consumers. The works as a demux or fanout if called multiple times. If a copy to
+// each consumer is needed, that must be done externally
+func (c *Convert) GetStream() <-chan [][]byte {
+	return c.outgoing
 }

@@ -89,3 +89,7 @@ func (r *Read) read() {
 		}
 	}
 }
+
+func (r *Read) GetStream() <-chan [][]byte {
+	return r.outgoing
+}
