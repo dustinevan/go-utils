@@ -2,93 +2,59 @@ package stream
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"sync"
-	"sync/atomic"
+	"time"
 )
 
 type ConvertFn func(b []byte) ([]byte, error)
 
 type ConvertOption func(c *Convert) *Convert
 
-func CancelOnConvertErr() ConvertOption {
-	return func(c *Convert) *Convert {
-		c.handler = func(err error, rec []byte) {
-			log.Printf("converter: encountered error: %s on record: %s, canceling stream.", err, string(rec))
-			c.canc()
-		}
-		return c
-	}
-}
+//func CancelOnConvertErr(canc context.CancelFunc) ConvertOption {
+//	return func(c *Convert) *Convert {
+//		c.handler = func(err error, rec []byte) {
+//			log.Printf("converter: encountered error: %s on record: %s, canceling stream.", err, string(rec))
+//			canc()
+//		}
+//		return c
+//	}
+//}
 
 type Convert struct {
-	convertfn ConvertFn
+	fn ConvertFn
 
-	ctx  context.Context
-	canc context.CancelFunc
-
-	// handle n possible calls to SetStream
-	muxwg     sync.WaitGroup
-	incoming  chan [][]byte
-	isWaiting int32
-
-	// returned when GetStream is called
-	mu       sync.Mutex
 	outgoing chan [][]byte
 
-	// how should convert errors be handled?
-	handler func(err error, rec []byte)
+	ctx     context.Context
+	donewg  sync.WaitGroup
+	monitor *Monitor
 }
 
-func NewConvert(convertfn ConvertFn, ctx context.Context, can context.CancelFunc, opts ...ConvertOption) *Convert {
+func NewConvert(fn ConvertFn, in <-chan [][]byte, opts ...ConvertOption) *Convert {
+	ctx, canc := context.WithCancel(context.Background())
+
 	c := &Convert{
-		convertfn: convertfn,
+		fn: fn,
 
-		ctx:  ctx,
-		canc: can,
-
-		muxwg:    sync.WaitGroup{},
-		incoming: make(chan [][]byte, 4),
-		outgoing: make(chan [][]byte, 4),
-		handler: func(err error, rec []byte) {
-			log.Printf("converter: encountered error: %s on record: %s, canceling stream.", err, string(rec))
-		},
+		outgoing: make(chan [][]byte, 16),
+		ctx:      ctx,
+	}
+	for _, opt := range opts {
+		opt(c)
 	}
 
+	c.donewg.Add(1)
+	monitor := NewMonitor(&c.donewg, canc)
+
+	c.monitor = monitor
+
 	go func() {
-		c.convert()
+		defer close(c.outgoing)
+		defer c.donewg.Done()
+		c.convert(in)
 	}()
 	return c
-}
-
-// SetStream works as a Mux into the incoming channel.
-func (c *Convert) SetStream(ch <-chan [][]byte) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	// write data from ch to incoming
-	c.muxwg.Add(1)
-	go func() {
-		for b := range ch {
-			c.incoming <- b
-		}
-		c.muxwg.Done()
-	}()
-
-	c.waitAndClose()
-}
-
-func (c *Convert) waitAndClose() {
-	// if the goroutine already exists, return
-	if atomic.LoadInt32(&c.isWaiting) > 0 {
-		return
-	}
-	atomic.AddInt32(&c.isWaiting, 1)
-
-	// start goroutine that will close incoming when all the channels writing to it close
-	go func() {
-		c.muxwg.Wait()
-		close(c.incoming)
-	}()
 }
 
 // Called by consumers. The works as a demux or fanout if called multiple times. If a copy to
@@ -97,25 +63,36 @@ func (c *Convert) GetStream() <-chan [][]byte {
 	return c.outgoing
 }
 
-func (c *Convert) convert() {
-	defer close(c.outgoing)
-	for chunk := range c.incoming {
+func (c *Convert) convert(in <-chan [][]byte) {
+	success := 0
+	failed := 0
+	start := time.Now()
+	defer c.monitor.SubmitStat(fmt.Sprintf("successful convert of %v messages, %v messages failed in %s",
+		success, failed, time.Since(start)))
+
+	for chunk := range in {
 		select {
 		case <-c.ctx.Done():
+			c.monitor.SubmitErr(fmt.Errorf("convertstream: canceled"))
 			continue
 		default:
 			bufs := make([][]byte, len(chunk))
 			i := 0
 			for _, bytes := range chunk {
-				buf, err := c.convertfn(bytes)
+				buf, err := c.fn(bytes)
 				if err != nil {
-					c.handler(err, bytes)
+					c.monitor.SubmitErr(fmt.Errorf("converter: encountered error: %s on record: %s, skipping", err, string(bytes)))
+					failed++
 					continue
 				}
+				success++
 				bufs[i] = buf
 				i++
 			}
 			c.outgoing <- bufs[:i-1]
 		}
+	}
+	if failed == 0 {
+		c.monitor.SetSuccess(true)
 	}
 }

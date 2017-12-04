@@ -2,15 +2,15 @@ package stream
 
 import (
 	"context"
+	"fmt"
 	"io"
-	"log"
-
-	"github.com/dustinevan/protobuf/records"
+	"sync"
+	"time"
 )
 
-type ReaderOption func(stream *Read) *Read
+type ReadOption func(stream *Read) *Read
 
-func ChunkSize(n int) ReaderOption {
+func ChunkSize(n int) ReadOption {
 	return func(stream *Read) *Read {
 		stream.chunksize = n
 		return stream
@@ -18,67 +18,74 @@ func ChunkSize(n int) ReaderOption {
 }
 
 type Read struct {
-	r records.Reader
+	r RecordReader
 
-	ctx  context.Context
-	canc context.CancelFunc
 	chunksize int
+	outgoing  chan [][]byte
 
-	outgoing chan [][]byte
-
+	ctx     context.Context
+	donewg  sync.WaitGroup
+	monitor *Monitor
 }
 
-func NewRead(r records.Reader, ctx context.Context, canc context.CancelFunc, opts ...ReaderOption) *Read {
-	return &Read{
-		r: r,
+func NewRead(r RecordReader, opts ...ReadOption) (*Read, *Monitor) {
+	ctx, canc := context.WithCancel(context.Background())
 
-		ctx:  ctx,
-		canc: canc,
+	read := &Read{
+		r:         r,
 		chunksize: 100,
-		outgoing: make(chan [][]byte, 16),
+		outgoing:  make(chan [][]byte, 16),
+		ctx:       ctx,
 	}
-}
+	for _, opt := range opts {
+		opt(read)
+	}
 
-func (s *Read) Start() {
+	read.donewg.Add(1)
+	monitor := NewMonitor(&read.donewg, canc)
+
+	read.monitor = monitor
+
 	go func() {
-		s.read()
+		defer close(read.outgoing)
+		defer read.donewg.Done()
+		read.read()
 	}()
+
+	return read, monitor
 }
 
-func (s *Read) read() {
-	defer close(s.outgoing)
+func (r *Read) read() {
+	bcount := 0
+	mcount := 0
+	start := time.Now()
 	for {
 		select {
-		case <-s.ctx.Done():
-			log.Println("readstream: canceled")
+		case <-r.ctx.Done():
+			r.monitor.SubmitErr(fmt.Errorf("readstream: canceled"))
 			return
 		default:
-			chunk := make([][]byte, s.chunksize)
-			for i := 0; i < s.chunksize; i++{
-				bytes, err := s.r.Read()
+			chunk := make([][]byte, r.chunksize)
+			for i := 0; i < r.chunksize; i++ {
+				bytes, err := r.r.Read()
 				if err != nil && err != io.EOF {
-					log.Println("readstream: encountered read error, canceling stream.", err)
-					s.canc()
+					r.monitor.SubmitErr(err)
+					r.monitor.SubmitStat(fmt.Sprintf("unsuccessful read of: %s read %v bytes %v message in %s",
+						r.r.Name(), bcount, mcount, time.Since(start)))
 					return
 				}
 				if err == io.EOF {
-					s.outgoing <- chunk[:i]
+					r.outgoing <- chunk[:i]
+					r.monitor.SetSuccess(true)
+					r.monitor.SubmitStat(fmt.Sprintf("successful read of: %s read %v bytes %v message in %s",
+						r.r.Name(), bcount, mcount, time.Since(start)))
 					return
 				}
+				bcount += len(bytes)
+				mcount++
 				chunk[i] = bytes
 			}
-			s.outgoing <- chunk
+			r.outgoing <- chunk
 		}
 	}
 }
-
-// Called by consumers. The works as a demux or fanout if called multiple times. If a copy to
-// each consumer is needed, that must be done externally
-func (s *Read) GetStream() <-chan [][]byte {
-	return s.outgoing
-}
-
-// for the future
-//func (w *Read) Monitor() <-chan monitor.Message {
-//
-//}
