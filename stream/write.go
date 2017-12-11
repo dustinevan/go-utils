@@ -2,95 +2,105 @@ package stream
 
 import (
 	"context"
+	"fmt"
 	"io"
-	"log"
 	"sync"
-	"sync/atomic"
+	"time"
 )
 
-type StreamWriter struct {
+type WriteOption func(c *Write) *Write
+
+// TODO: make record writer
+type Write struct {
 	w io.Writer
 
-	ctx  context.Context
-	canc context.CancelFunc
+	ctx    context.Context
+	canc   context.CancelFunc
+	donewg sync.WaitGroup
 
-	parentwg *sync.WaitGroup
-	// this wg is for the multiple incoming channels (see SetStream) so we know when
-	// to close incoming and complete
-
-	muxwg     sync.WaitGroup
-	incoming  chan [][]byte
-	isWaiting int32
-	mu        sync.Mutex
-
-	completed chan struct{}
+	errs  chan error
+	stats chan string
 }
 
-func NewStreamWriter(w io.Writer, wg *sync.WaitGroup, ctx context.Context, can context.CancelFunc) *StreamWriter {
-	s := &StreamWriter{
+func NewWrite(w io.Writer, in <-chan [][]byte, opts ...WriteOption) *Write {
+	ctx, canc := context.WithCancel(context.Background())
+
+	wr := &Write{
 		w: w,
 
-		ctx:      ctx,
-		canc:     can,
-		parentwg: wg,
+		ctx:  ctx,
+		canc: canc,
 
-		muxwg:    sync.WaitGroup{},
-		incoming: make(chan [][]byte, 16),
-
-		completed: make(chan struct{}, 1),
+		errs:  make(chan error, 10000),
+		stats: make(chan string, 8),
+	}
+	for _, opt := range opts {
+		opt(wr)
 	}
 
+	wr.donewg.Add(1)
 	go func() {
-		s.write()
-	}()
-	return s
-}
-
-// SetStream works as a Mux into the incoming channel.
-func (s *StreamWriter) SetStream(ch <-chan [][]byte) {
-	s.mu.Lock()
-	s.mu.Unlock()
-	// write data from ch to incoming
-	s.muxwg.Add(1)
-	go func() {
-		for b := range ch {
-			s.incoming <- b
-		}
-		s.muxwg.Done()
+		defer wr.donewg.Done()
+		wr.write(in)
 	}()
 
-	s.waitAndClose()
+	return wr
 }
 
-func (s *StreamWriter) waitAndClose() {
-	// if the goroutine already exists, return
-	if atomic.LoadInt32(&s.isWaiting) > 0 {
-		return
-	}
-	atomic.AddInt32(&s.isWaiting, 1)
+func (w *Write) write(in <-chan [][]byte) {
+	bcount := 0
+	mcount := 0
+	start := time.Now()
 
-	// start goroutine that will close incoming when all the channels writing to it close
-	go func() {
-		s.muxwg.Wait()
-		close(s.incoming)
-	}()
-}
+	for chunk := range in {
 
-func (s *StreamWriter) write() {
-	defer s.parentwg.Done()
-	for chunk := range s.incoming {
 		select {
-		case <-s.ctx.Done():
+		case <-w.ctx.Done():
+			w.submitErr(fmt.Errorf("writestream: canceled"))
 			continue
 		default:
 			for _, bytes := range chunk {
-				_, err := s.w.Write(bytes)
+				bcount += len(bytes)
+				mcount++
+				_, err := w.w.Write(append(bytes, '\n'))
 				if err != nil {
-					log.Println("streamwriter: encountered write error, canceling stream.")
-					s.canc()
+					w.submitStat(fmt.Sprintf("write failed, completed write of %v bytes, %v messages in %s",
+						bcount, mcount, time.Since(start)))
+					w.submitErr(err)
 				}
 			}
 		}
 	}
-	close(s.completed)
+	w.submitStat(fmt.Sprintf("successful write of %v bytes, %v messages in %s",
+		bcount, mcount, time.Since(start)))
+}
+
+func (w *Write) submitStat(s string) {
+	select {
+	case w.stats <- s:
+	default:
+	}
+}
+
+func (w *Write) submitErr(e error) {
+	select {
+	case w.errs <- e:
+	default:
+	}
+}
+
+func (w *Write) ListenErr() <-chan error {
+	return w.errs
+}
+
+func (w *Write) ListenStats() <-chan string {
+	return w.stats
+}
+
+func (w *Write) Wait() {
+	w.donewg.Wait()
+}
+
+func (w *Write) Cancel() {
+	w.canc()
 }
