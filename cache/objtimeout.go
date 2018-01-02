@@ -27,7 +27,7 @@ type ObjCache struct {
 	records    int
 	maxrecords int
 	mu         sync.RWMutex
-	scanRate time.Duration
+	scanRate   time.Duration
 }
 
 func NewObjCache(maxrecords int, opts ...CacheOption) *ObjCache {
@@ -39,7 +39,7 @@ func NewObjCache(maxrecords int, opts ...CacheOption) *ObjCache {
 		c:          make(map[string]*val),
 		records:    0,
 		maxrecords: maxrecords,
-		scanRate: time.Second*30,
+		scanRate:   time.Second * 30,
 	}
 
 	for _, opt := range opts {

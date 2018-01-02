@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mediaFORGE/supplyqc/vendor/github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestInsertMaxRecords(t *testing.T) {

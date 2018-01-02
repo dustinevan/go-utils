@@ -4,20 +4,19 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mediaFORGE/supplyqc/vendor/github.com/pkg/errors"
+	"errors"
 )
 
 var CACHEFULL = errors.New("could not insert, the cache is full")
 var ALREADY_EXISTS = errors.New("this key already exists")
 var EMPTY_RECORD = errors.New("the value for this key is empty")
 
-
 type TimeoutCache struct {
 	c          map[string]time.Time
 	records    int
 	maxrecords int
 	mu         sync.RWMutex
-	scanRate time.Duration
+	scanRate   time.Duration
 }
 
 func NewTimeoutCache(maxrecords int, opts ...CacheOption) *TimeoutCache {
@@ -29,7 +28,7 @@ func NewTimeoutCache(maxrecords int, opts ...CacheOption) *TimeoutCache {
 		c:          make(map[string]time.Time),
 		records:    0,
 		maxrecords: maxrecords,
-		scanRate: time.Second * 30,
+		scanRate:   time.Second * 30,
 	}
 
 	for _, opt := range opts {
@@ -56,7 +55,6 @@ func NewTimeoutCache(maxrecords int, opts ...CacheOption) *TimeoutCache {
 func (t *TimeoutCache) SetScanRate(duration time.Duration) {
 	t.scanRate = duration
 }
-
 
 func (t *TimeoutCache) Check(k string) bool {
 	t.mu.Lock()
