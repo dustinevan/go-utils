@@ -7,6 +7,8 @@ import (
 	"time"
 )
 
+type InChan <-chan [][]byte
+
 type ConvertFn func(b []byte) ([]byte, error)
 
 type ConvertOption func(c *Convert) *Convert
@@ -31,7 +33,7 @@ type Convert struct {
 	monitor *Monitor
 }
 
-func NewConvert(fn ConvertFn, in <-chan [][]byte, opts ...ConvertOption) (*Convert, *Monitor) {
+func NewConvert(fn ConvertFn, in []InChan, opts ...ConvertOption) (*Convert, *Monitor) {
 	ctx, canc := context.WithCancel(context.Background())
 
 	c := &Convert{
@@ -44,16 +46,19 @@ func NewConvert(fn ConvertFn, in <-chan [][]byte, opts ...ConvertOption) (*Conve
 		opt(c)
 	}
 
-	c.donewg.Add(1)
+	c.donewg.Add(len(in))
 	monitor := NewMonitor(&c.donewg, canc)
 
 	c.monitor = monitor
 
-	go func() {
-		defer close(c.outgoing)
-		defer c.donewg.Done()
-		c.convert(in)
-	}()
+	for _, ch := range in {
+		go func() {
+			defer close(c.outgoing)
+			defer c.donewg.Done()
+			c.convert(ch)
+		}()
+	}
+
 	return c, monitor
 }
 
@@ -61,8 +66,6 @@ func (c *Convert) convert(in <-chan [][]byte) {
 	success := 0
 	failed := 0
 	start := time.Now()
-	defer c.monitor.SubmitStat(fmt.Sprintf("successful convert of %v messages, %v messages failed in %s",
-		success, failed, time.Since(start)))
 
 	for chunk := range in {
 		select {
@@ -83,12 +86,15 @@ func (c *Convert) convert(in <-chan [][]byte) {
 				bufs[i] = buf
 				i++
 			}
-			c.outgoing <- bufs[:i-1]
+			c.outgoing <- bufs[:i]
 		}
 	}
+	c.monitor.SubmitStat(fmt.Sprintf("\nsuccessful convert of %v messages; %v messages failed; finished in %s",
+		success, failed, time.Since(start)))
 	if failed == 0 {
 		c.monitor.SetSuccess(true)
 	}
+
 }
 
 // Called by consumers. The works as a demux or fanout if called multiple times. If a copy to

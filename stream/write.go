@@ -21,7 +21,7 @@ type Write struct {
 	monitor *Monitor
 }
 
-func NewWrite(w io.Writer, in <-chan [][]byte, opts ...WriteOption) (*Write, *Monitor) {
+func NewWrite(w io.Writer, in []InChan, opts ...WriteOption) (*Write, *Monitor) {
 	ctx, canc := context.WithCancel(context.Background())
 
 	wr := &Write{
@@ -32,18 +32,19 @@ func NewWrite(w io.Writer, in <-chan [][]byte, opts ...WriteOption) (*Write, *Mo
 		opt(wr)
 	}
 
-	wr.donewg.Add(1)
+	wr.donewg.Add(len(in))
 	monitor := NewMonitor(&wr.donewg, canc)
 
 	wr.monitor = monitor
 
-	go func() {
-		defer wr.donewg.Done()
-		wr.write(in)
-	}()
+	for _, ch := range in {
+		go func() {
+			defer wr.donewg.Done()
+			wr.write(ch)
+		}()
+	}
 
 	return wr, monitor
-
 }
 
 func (w *Write) write(in <-chan [][]byte) {
