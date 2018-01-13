@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mediaFORGE/supplyqc/infra/cache"
+	"github.com/dustinevan/go-utils/cache"
 )
 
 var QFULL = errors.New("the channel is full, nothing can be inserted until consumers catch up")
