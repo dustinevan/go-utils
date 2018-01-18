@@ -4,8 +4,9 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/dustinevan/go-utils/cache"
 	"github.com/stretchr/testify/assert"
-	"github.com/mediaFORGE/supplyqc/infra/cache"
 )
 
 func TestUniQueue_Check(t *testing.T) {
@@ -35,7 +36,6 @@ func TestUniQueue_Insert(t *testing.T) {
 	assert.Equal(t, cache.ALREADY_EXISTS, ch1.Insert("b"), "dedup failed")
 	assert.Equal(t, cache.CACHEFULL, ch1.Insert("d"), "cache grew larger than maxdedup")
 
-
 	ch2 := NewUniQueue("test2", 12, 3, time.Second, ctx)
 
 	assert.Nil(t, ch2.Insert("a"), "first insert failed, three should work")
@@ -59,9 +59,9 @@ func TestUniQueue_Insert(t *testing.T) {
 	go func() {
 		err = ch2.Insert("l")
 	}()
-	time.Sleep(time.Millisecond*100)
+	time.Sleep(time.Millisecond * 100)
 	if err == nil {
-		assert.Fail(t,"inflight failed")
+		assert.Fail(t, "inflight failed")
 	} else {
 		assert.Equal(t, QFULL, err, "inflight failed to return CHANFULL on insert")
 	}
@@ -76,7 +76,7 @@ func TestUniQueue_Insert(t *testing.T) {
 	assert.Equal(t, 0, ch2.records, "record count incorrect")
 
 	c := ch2.GetChan()
-	go func() {<-c}()
+	go func() { <-c }()
 	// wait for to transfer from q to outgoing
 	time.Sleep(time.Millisecond)
 	assert.Nil(t, ch2.Insert("a"), "read didn't create any space")

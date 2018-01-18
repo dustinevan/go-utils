@@ -4,92 +4,67 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"sync"
-	"github.com/dustinevan/go-utils/async"
 )
 
-type CatOption func(*cat) error
+type CatOption func(*Cat) *Cat
 
-func CatContext(ctx context.Context) CatOption {
-	return func(c *cat) error {
-		c.ctx = ctx
-		return nil
-	}
-}
-
-
-func ConcurrentStreams(i int) CatOption {
-	return func(c *cat) error {
-		if i < 1 {
-			panic("cannot have maxconcurrency < 1")
-		}
-		c.maxconcurrency = i
-		return nil
-	}
-}
-
-type cat struct {
+type Cat struct {
 	fn                   ConvertFn
-	absfilenames          []string
+	absfilepath          []string
 	ctx                  context.Context
-	maxconcurrency int
+	concurrentConverters int
 }
 
-func CatFiles(fn ConvertFn, absfilenames []string, opts ...CatOption ) error {
-	c := &cat{
-		fn: fn,
-		absfilenames: absfilenames,
-		ctx: context.Background(),
-		maxconcurrency: 4,
-	}
-	for _, opt := range opts {
-		opt(c)
-	}
-
+func CatFiles(fn ConvertFn, absfilenames []string, ctx context.Context, opts ...CatOption) error {
 	if len(absfilenames) == 0 {
 		return fmt.Errorf("no files passed to CatFiles")
 	}
 
+	rs := &Cat{
+		fn:                   fn,
+		ctx:                  ctx,
+		concurrentConverters: 1,
+	}
+	for _, opt := range opts {
+		opt(rs)
+	}
+
+	rmons := make([]*Monitor, len(absfilenames))
+	rstreams := make([]InChan, len(absfilenames))
 	if len(absfilenames) == 1 && absfilenames[0] == "stdin" {
-		rdr, err := NewFileReader("stdin")
-		if err != nil {
-			return err
+		read, mon := NewRead(NewFileReader(os.Stdin), ChunkSize(1024))
+		rstreams[0] = read.GetStream()
+		rmons[0] = mon
+	} else {
+		for i, name := range absfilenames {
+			option, err := FileToRead(name)
+			if err != nil {
+				return err
+			}
+			read, mon := NewRead(NewFileReader(nil, option), ChunkSize(1024))
+			rstreams[i] = read.GetStream()
+			rmons[i] = mon
 		}
-		r := NewRead(rdr, ChunkSize(1))
-		c := NewConvert(fn, r.GetStream())
-		w := NewWrite(os.Stdout, c.GetStream())
-
-		monit := NewMonitor(c.ctx)
-		monit.Register(r, CancelOnErr)
-		monit.Register(c, LogAll)
-		monit.Register(w, CancelOnErr)
-		w.Wait()
-		return nil
 	}
 
-	sem := async.NewSemaphore(c.maxconcurrency, c.ctx)
-	var wg sync.WaitGroup
-	for _, filen := range absfilenames {
-		err := sem.Acquire()
-		if err != nil {
-			continue
-		}
-		wg.Add(1)
-		rdr, err := NewFileReader(filen)
-		if err != nil {
-			return err
-		}
-		r := NewRead(rdr, ChunkSize(1024))
-		c := NewConvert(fn, r.GetStream())
-		w := NewWrite(os.Stdout, c.GetStream())
+	// TODO: don't join if there's only one
+	readmon := JoinMonitors(rmons...)
 
-		go func() {
-			defer wg.Done()
-			defer sem.Release()
-			w.Wait()
-		}()
-	}
+	convert, monc := NewConvert(rs.fn, rstreams)
+	_, monw := NewWrite(os.Stdout, []InChan{convert.GetStream()})
 
-	wg.Wait()
+	readmon.CancelOnErr(func() {
+		readmon.CancelRoutine()
+		monc.CancelRoutine()
+		monw.CancelRoutine()
+	})
+	monw.CancelOnErr(func() {
+		readmon.CancelRoutine()
+		monc.CancelRoutine()
+		monw.CancelRoutine()
+	})
+	monc.Log()
+
+	monw.GetSuccess()
 	return nil
 }

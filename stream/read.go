@@ -18,46 +18,41 @@ func ChunkSize(n int) ReadOption {
 }
 
 type Read struct {
-	rdr RecordReader
+	r RecordReader
 
 	chunksize int
 	outgoing  chan [][]byte
 
-	ctx    context.Context
-	canc   context.CancelFunc
-	donewg sync.WaitGroup
-
-	errs  chan error
-	stats chan string
+	ctx     context.Context
+	donewg  sync.WaitGroup
+	monitor *Monitor
 }
 
-func NewRead(rdr RecordReader, opts ...ReadOption) *Read {
+func NewRead(r RecordReader, opts ...ReadOption) (*Read, *Monitor) {
 	ctx, canc := context.WithCancel(context.Background())
 
-	r := &Read{
-		rdr: rdr,
-
+	read := &Read{
+		r:         r,
 		chunksize: 100,
 		outgoing:  make(chan [][]byte, 16),
-
-		ctx:  ctx,
-		canc: canc,
-
-		errs:  make(chan error, 10000),
-		stats: make(chan string, 8),
+		ctx:       ctx,
 	}
 	for _, opt := range opts {
-		opt(r)
+		opt(read)
 	}
 
-	r.donewg.Add(1)
+	read.donewg.Add(1)
+	monitor := NewMonitor(&read.donewg, canc)
+
+	read.monitor = monitor
+
 	go func() {
-		defer close(r.outgoing)
-		defer r.donewg.Done()
-		r.read()
+		defer close(read.outgoing)
+		defer read.donewg.Done()
+		read.read()
 	}()
 
-	return r
+	return read, monitor
 }
 
 func (r *Read) read() {
@@ -67,23 +62,23 @@ func (r *Read) read() {
 	for {
 		select {
 		case <-r.ctx.Done():
-			r.submitErr(fmt.Errorf("readstream: canceled"))
+			r.monitor.SubmitErr(fmt.Errorf("readstream: canceled"))
 			return
 		default:
 			chunk := make([][]byte, r.chunksize)
 			for i := 0; i < r.chunksize; i++ {
-				bytes, err := r.rdr.Read()
+				bytes, err := r.r.Read()
 				if err != nil && err != io.EOF {
-					r.submitErr(fmt.Errorf("read of %s failed, %s", r.rdr.Name(), err))
-					r.submitStat(fmt.Sprintf("unsuccessful read of: %s read %v bytes %v message in %s",
-						r.rdr.Name(), bcount, mcount, time.Since(start)))
+					r.monitor.SubmitErr(err)
+					r.monitor.SubmitStat(fmt.Sprintf("unsuccessful read of: %s read %v bytes %v message in %s",
+						r.r.Name(), bcount, mcount, time.Since(start)))
 					return
 				}
 				if err == io.EOF {
 					r.outgoing <- chunk[:i]
-					r.submitStat(fmt.Sprintf("successful read of: %s read %v bytes %v message in %s",
-						r.rdr.Name(), bcount, mcount, time.Since(start)))
-
+					r.monitor.SetSuccess(true)
+					r.monitor.SubmitStat(fmt.Sprintf("successful read of: %s read %v bytes %v message in %s",
+						r.r.Name(), bcount, mcount, time.Since(start)))
 					return
 				}
 				bcount += len(bytes)
@@ -95,36 +90,6 @@ func (r *Read) read() {
 	}
 }
 
-func (r *Read) submitStat(s string) {
-	select {
-	case r.stats <- s:
-	default:
-	}
-}
-
-func (r *Read) submitErr(e error) {
-	select {
-	case r.errs <- e:
-	default:
-	}
-}
-
 func (r *Read) GetStream() <-chan [][]byte {
 	return r.outgoing
-}
-
-func (r *Read) ListenErr() <-chan error {
-	return r.errs
-}
-
-func (r *Read) ListenStats() <-chan string {
-	return r.stats
-}
-
-func (r *Read) Wait() {
-	r.donewg.Wait()
-}
-
-func (r *Read) Cancel() {
-	r.canc()
 }

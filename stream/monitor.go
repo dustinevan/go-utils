@@ -2,103 +2,186 @@ package stream
 
 import (
 	"context"
-	"log"
 	"sync"
+
+	"log"
+
+	"github.com/pkg/errors"
 )
 
-type Monitored interface {
-	ListenErr() <-chan error
-	ListenStats() <-chan string
-	Wait()
-	Cancel()
-}
+var STAT_FULL = errors.New("max number of inflight stats messages reached")
 
-type MonitoringType int
-
-const (
-	LogAll MonitoringType = iota
-	CancelOnErr
-)
-
+// A monitor is used to pass stats, error, and success/failure information about a stream parts
+// back to stream parent
 type Monitor struct {
-	ctx context.Context
+	success bool
 
-	cancs []func()
-	canceled bool
+	stats        chan string
+	statinflight int
+	statlimit    int
 
-	waits []func()
+	errs        chan error
+	errinflight int
+	errlimit    int
 
 	mu sync.Mutex
+
+	routinewg   *sync.WaitGroup
+	routinecanc context.CancelFunc
 }
 
-func NewMonitor(ctx context.Context) *Monitor {
+func NewMonitor(routinewg *sync.WaitGroup, routinecanc context.CancelFunc) *Monitor {
 	m := &Monitor{
-		ctx: ctx,
-		cancs: make([]func(), 0),
+		errs:      make(chan error, 16),
+		stats:     make(chan string, 16),
+		statlimit: 16,
+		errlimit:  16,
+
+		routinewg:   routinewg,
+		routinecanc: routinecanc,
 	}
 
 	go func() {
-		<-ctx.Done()
-		m.Cancel()
+		m.routinewg.Wait()
+		close(m.errs)
+		close(m.stats)
 	}()
 
 	return m
 }
 
-func (m *Monitor) Register(md Monitored, t MonitoringType) {
-	if t == CancelOnErr {
-		m.cancelOnErr(md)
+func JoinMonitors(ms ...*Monitor) *Monitor {
+
+	var wg sync.WaitGroup
+	p := &Monitor{
+		errs:         make(chan error, 1024),
+		stats:        make(chan string, 1024),
+		statlimit:    1024,
+		errlimit:     1024,
+		routinewg: &wg,
 	}
-	if t== LogAll {
+
+	for _, m := range ms {
+		p.routinewg.Add(1)
 		go func() {
-			stats := md.ListenStats()
-			errs := md.ListenErr()
-			for s := range stats {
-				log.Println(s)
+			defer p.routinewg.Done()
+			for e := range m.ReadErrors() {
+				p.SubmitErr(e)
 			}
-			for e := range errs {
-				log.Println(e)
+		}()
+		p.routinewg.Add(1)
+		go func() {
+			defer p.routinewg.Done()
+			for s := range m.ReadStats() {
+				p.SubmitStat(s)
 			}
 		}()
 	}
+
+	p.routinecanc = func() {
+		for _, m := range ms {
+			m.routinecanc()
+		}
+	}
+
+	// this wait group waits on each of the underlying monitor wgs.
+	// after it completes a goroutine that checks the combined success
+	// unblocks
+	var internalwg sync.WaitGroup
+	for _, m := range ms {
+		internalwg.Add(1)
+		go func() {
+			defer internalwg.Done()
+			m.routinewg.Wait()
+		}()
+	}
+
+	// when all the underlying monitors complete, check the combined
+	// success or failure.
+	p.routinewg.Add(1)
+	go func() {
+		internalwg.Wait()
+		p.success = true
+		for _, m := range ms {
+			p.success = p.success && m.success
+		}
+		p.routinewg.Done()
+	}()
+
+	go func() {
+		p.routinewg.Wait()
+		close(p.errs)
+		close(p.stats)
+	}()
+
+	return p
 }
 
-func (m *Monitor) cancelOnErr(md Monitored) {
-	m.addCancelFn(md.Cancel)
+// write methods are used by the thing being monitored. non-blocking
+func (m *Monitor) SubmitStat(s string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.statlimit == m.statinflight {
+		return STAT_FULL
+	}
+	m.stats <- s
+	m.statinflight++
+	return nil
+}
+
+// write methods are used by the thing being monitored. non-blocking
+func (m *Monitor) SubmitErr(e error) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.errlimit == m.errinflight {
+		return STAT_FULL
+	}
+	m.errs <- e
+	m.errinflight++
+	return nil
+}
+
+// returns the stat channel
+func (m *Monitor) ReadStats() <-chan string {
+	return m.stats
+}
+
+func (m *Monitor) ReadErrors() <-chan error {
+	return m.errs
+}
+
+func (m *Monitor) SetSuccess(bool bool) {
+	m.success = bool
+}
+
+func (m *Monitor) CancelRoutine() {
+	m.routinecanc()
+}
+
+func (m *Monitor) GetSuccess() bool {
+	m.routinewg.Wait()
+	return m.success
+}
+
+func (m *Monitor) Log() {
 	go func() {
-		errs := md.ListenErr()
-		for e := range errs {
-			log.Println(e.Error())
-			m.Cancel()
-			return
-		}
-	}()
-	go func() {
-		stats := md.ListenStats()
-		for s := range stats {
+		for s := range m.ReadStats() {
 			log.Println(s)
 		}
 	}()
+	go func() {
+		for e := range m.ReadErrors() {
+			log.Println(e)
+		}
+	}()
 }
 
-func (m *Monitor) addCancelFn(fn func()) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.canceled == true {
-		fn()
-		return
-	}
-	m.cancs = append(m.cancs, fn)
-}
-
-func (m *Monitor) Cancel() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.canceled == true {
-		panic("Monitor: cancel called twice" )
-	}
-	for _, c := range m.cancs {
-		c()
-	}
-	m.canceled = true
+func (m *Monitor) CancelOnErr(canc func()) {
+	go func() {
+		for e := range m.ReadErrors() {
+			log.Println(e)
+			canc()
+			return
+		}
+	}()
 }

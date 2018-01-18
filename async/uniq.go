@@ -7,11 +7,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/dustinevan/go-utils/cache"
 )
 
 var QFULL = errors.New("the channel is full, nothing can be inserted until consumers catch up")
 var UNIQUEUE_CLOSED = errors.New("this uniqueue is closed")
-var ALREADY_EXISTS = errors.New("already exists")
 
 type UniQueue struct {
 	// name is for logging purposes only
@@ -127,11 +128,11 @@ func (c *UniQueue) Insert(s string) error {
 
 	_, ok := c.dedup[s]
 	if ok {
-		return ALREADY_EXISTS
+		return cache.ALREADY_EXISTS
 	}
 
 	if c.records == c.maxdedup {
-		return QFULL
+		return cache.CACHEFULL
 	}
 
 	// not ok with race conditions here

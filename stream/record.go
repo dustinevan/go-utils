@@ -14,13 +14,31 @@ type RecordReader interface {
 	Name() string
 }
 
-type FileReaderOption func(f *FileReader) error
+type FileReaderOption func(f *FileReader) *FileReader
 
 func Delim(d byte) FileReaderOption {
-	return func(r *FileReader) error {
+	return func(r *FileReader) *FileReader {
 		r.delim = d
-		return nil
+		return r
 	}
+}
+
+func FileToRead(absfilename string) (FileReaderOption, error) {
+	file, err := os.Open(absfilename)
+	if err != nil {
+		return nil, err
+	}
+	return func(f *FileReader) *FileReader {
+		f.file = file
+		f.postread = append(f.postread, func() {
+			err := file.Close()
+			if err != nil {
+				log.Println(err)
+			}
+
+		})
+		return f
+	}, nil
 }
 
 //TODO: Gzip, Lzop Options
@@ -30,92 +48,63 @@ type FileReader struct {
 	file  *os.File
 	delim byte
 
-	decompress func(file *os.File) (*os.File, error)
+	decompress func(string) (*os.File, error)
 	filename   string
 
 	postread []func()
 
-	decompresswg sync.WaitGroup
-	ready        bool
-	empty        bool
+	wg    sync.WaitGroup
+	ready bool
+	empty bool
 }
 
-func NewFileReader(filename string, opts ...FileReaderOption) (*FileReader, error) {
-	r := &FileReader{
-		delim:    '\n',
-		postread: make([]func(), 0),
+func NewFileReader(file *os.File, opts ...FileReaderOption) *FileReader {
+	f := &FileReader{
+		delim: '\n',
+		file:  file,
 	}
-	if filename == "stdin" {
-		r.file = os.Stdin
-	} else {
-		f, err := os.Open(filename)
-		if err != nil {
-			return nil, err
-		}
-		r.file = f
-		r.postread = append(r.postread, func() {
-			err := f.Close()
-			if err != nil {
-				log.Println(err)
-			}
-		})
-	}
-
 	for _, opt := range opts {
-		if err := opt(r); err != nil {
-			return nil, err
+		opt(f)
+	}
+
+	if f.decompress == nil {
+		f.buf = bufio.NewReader(file)
+		return f
+	}
+
+	f.wg.Add(1)
+	go func() {
+		defer f.wg.Done()
+		df, err := f.decompress(f.filename)
+		if err != nil {
+			f.empty = true
+			f.ready = true
+			log.Printf("decompression failed %s")
+			return
 		}
-	}
+		f.buf = bufio.NewReader(df)
+		f.ready = true
+	}()
 
-	// if decompress is set, run decompression, and replace file, replace buf, and add a close func to postread
-	if r.decompress != nil {
-		r.decompresswg.Add(1)
-		go func() {
-			defer r.decompresswg.Done()
-			df, err := r.decompress(r.file)
-			if err != nil {
-				r.empty = true
-				r.ready = true
-				log.Printf("decompression failed %s", err)
-				return
-			}
-			r.file = df
-			r.postread = append(r.postread, func() {
-				err := df.Close()
-				if err != nil {
-					log.Println(err)
-				}
-			})
-			r.ready = true
-			r.buf = bufio.NewReader(r.file)
-		}()
-	} else {
-		r.buf = bufio.NewReader(r.file)
-		r.ready = true
-	}
-
-
-	return r, nil
+	return f
 }
 
-func (r *FileReader) Read() ([]byte, error) {
-	if !r.ready {
-		r.decompresswg.Wait()
+func (f *FileReader) Read() ([]byte, error) {
+	if !f.ready {
+		f.wg.Wait()
 	}
-	if r.empty {
+	if f.empty {
 		return nil, fmt.Errorf("decompression failed")
 	}
-	bytes, err := r.buf.ReadBytes(r.delim)
-	return bytes, err
-
+	return f.buf.ReadBytes(f.delim)
 }
 
-func (r *FileReader) Close() {
-	for _, fn := range r.postread {
+func (f *FileReader) Close() {
+	for _, fn := range f.postread {
 		fn()
 	}
 }
 
-func (r *FileReader) Name() string {
-	return r.file.Name()
+func (f *FileReader) Name() string {
+	return f.file.Name()
 }
