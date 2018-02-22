@@ -41,7 +41,7 @@ func NewRateLimiter(maxparallel, maxpersecond int, ctx context.Context) *RateLim
 	return r
 }
 
-func (r *RateLimiter) Acquire() error {
+func (r *RateLimiter) Acquire() {
 
 }
 
