@@ -31,6 +31,7 @@ type DedupWorkerPool struct {
 	wg    sync.WaitGroup
 	canc  context.CancelFunc
 	qcanc context.CancelFunc
+	//comment
 }
 
 func NewDedupWorkerPool(workers int, uniq *UniQueue, se SideEffectFn, parentCtx context.Context, qcanc context.CancelFunc) *DedupWorkerPool {
